@@ -1,0 +1,52 @@
+import { Counter } from '../types';
+
+export const mockCounters: Counter[] = [
+  {
+    id: 'C001',
+    organizationId: 'ORG-01',
+    counterNumber: 1,
+    name: 'Counter 1',
+    serviceId: 'S-02',
+    serviceName: 'Billing Counter',
+    staffId: 'S002',
+    staffName: 'Pooja Verma',
+    status: 'ACTIVE',
+    currentServingToken: 'B-104',
+  },
+  {
+    id: 'C002',
+    organizationId: 'ORG-01',
+    counterNumber: 2,
+    name: 'Counter 2',
+    serviceId: 'S-01',
+    serviceName: 'General Consultation',
+    staffId: 'S001',
+    staffName: 'Rajesh Kumar',
+    status: 'ACTIVE',
+    currentServingToken: 'D-104',
+  },
+  {
+    id: 'C003',
+    organizationId: 'ORG-01',
+    counterNumber: 3,
+    name: 'Counter 3',
+    serviceId: 'S-03',
+    serviceName: 'Document Verification',
+    staffId: undefined,
+    staffName: 'Unassigned',
+    status: 'IDLE',
+    currentServingToken: undefined,
+  },
+  {
+    id: 'C004',
+    organizationId: 'ORG-01',
+    counterNumber: 4,
+    name: 'Counter 4',
+    serviceId: 'S-04',
+    serviceName: 'Pharmacy Counter',
+    staffId: undefined,
+    staffName: 'Unassigned',
+    status: 'CLOSED',
+    currentServingToken: undefined,
+  }
+];

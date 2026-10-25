@@ -1,0 +1,56 @@
+import { User } from '../types';
+
+export const mockUsers: User[] = [
+  {
+    id: 'U001',
+    name: 'Siddhi Patel',
+    email: 'siddhi@example.com',
+    phone: '+91 98765 43210',
+    role: 'USER',
+    status: 'ACTIVE',
+    lastActive: 'Just now',
+  },
+  {
+    id: 'S001',
+    name: 'Rajesh Kumar',
+    email: 'rajesh.kumar@citycare.org',
+    phone: '+91 98765 43211',
+    role: 'STAFF',
+    assignedCounterId: 'C002',
+    organizationId: 'ORG-01',
+    status: 'ACTIVE',
+    lastActive: '5 minutes ago',
+  },
+  {
+    id: 'A001',
+    name: 'Dr. Anita Roy',
+    email: 'anita.roy@citycare.org',
+    phone: '+91 98765 43212',
+    role: 'ADMIN',
+    organizationId: 'ORG-01',
+    status: 'ACTIVE',
+    lastActive: 'Active now',
+  },
+  {
+    id: 'S002',
+    name: 'Pooja Verma',
+    email: 'pooja.v@citycare.org',
+    phone: '+91 98765 43213',
+    role: 'STAFF',
+    assignedCounterId: 'C001',
+    organizationId: 'ORG-01',
+    status: 'ACTIVE',
+    lastActive: '12 minutes ago',
+  },
+  {
+    id: 'S003',
+    name: 'Vikram Singh',
+    email: 'vikram.s@citycare.org',
+    phone: '+91 98765 43214',
+    role: 'STAFF',
+    assignedCounterId: 'C003',
+    organizationId: 'ORG-01',
+    status: 'INACTIVE',
+    lastActive: 'Yesterday',
+  }
+];
