@@ -1,0 +1,21 @@
+# ── Server ─────────────────────────────────────────────────────────────
+server.port=8080
+
+# ── DataSource ─────────────────────────────────────────────────────────
+spring.datasource.url=jdbc:postgresql://localhost:5432/queuevista
+spring.datasource.username=postgres
+spring.datasource.password=YOUR_PASSWORD_HERE
+spring.datasource.driver-class-name=org.postgresql.Driver
+
+# ── JPA / Hibernate ────────────────────────────────────────────────────
+spring.jpa.hibernate.ddl-auto=validate
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.format_sql=true
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+
+# ── JWT ────────────────────────────────────────────────────────────────
+app.jwt.secret=CHANGE_THIS_TO_A_STRONG_256_BIT_SECRET_KEY_FOR_PRODUCTION
+app.jwt.expiration-ms=86400000
+
+# ── Jackson ────────────────────────────────────────────────────────────
+spring.jackson.serialization.write-dates-as-timestamps=false
