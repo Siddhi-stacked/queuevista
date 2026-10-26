@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+
+# Backend
+backend/target/
+backend/src/main/resources/application.properties
+application.properties
+.idea/
+.vscode/
