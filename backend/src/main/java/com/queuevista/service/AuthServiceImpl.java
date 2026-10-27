@@ -1,5 +1,6 @@
 package com.queuevista.service;
 
+import com.queuevista.dto.UserDto;
 import com.queuevista.dto.AuthResponse;
 import com.queuevista.dto.LoginRequest;
 import com.queuevista.dto.RegisterRequest;
@@ -66,9 +67,18 @@ public class AuthServiceImpl implements AuthService {
     private AuthResponse buildResponse(User user) {
         String role = user.getRole().name();
         String token = jwtUtils.generateToken(user.getEmail(), role, user.getId(), user.getFullName());
+        UserDto userDto = UserDto.builder()
+                .id(user.getId())
+                .fullName(user.getFullName())
+                .email(user.getEmail())
+                .phone(user.getPhone())
+                .role(user.getRole())
+                .status(user.getStatus())
+                .build();
         return AuthResponse.builder()
                 .token(token)
                 .tokenType("Bearer")
+                .user(userDto)
                 .build();
     }
 }

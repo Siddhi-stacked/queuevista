@@ -1,0 +1,1000 @@
+-- ==============================================================================
+-- QueueVista - PostgreSQL Database Schema
+-- Project: Real-Time Visibility for Digital Queues
+-- ==============================================================================
+
+-- Drop tables in reverse order of foreign key dependencies
+DROP TABLE IF EXISTS notifications CASCADE;
+DROP TABLE IF EXISTS queue_entries CASCADE;
+DROP TABLE IF EXISTS appointments CASCADE;
+DROP TABLE IF EXISTS counters CASCADE;
+DROP TABLE IF EXISTS services CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
+DROP TABLE IF EXISTS organizations CASCADE;
+
+-- ------------------------------------------------------------------------------
+-- 1. ORGANIZATIONS
+-- Represents clinic, hospital, bank, or government office branches.
+-- ------------------------------------------------------------------------------
+CREATE TABLE organizations (
+    id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(150) NOT NULL,
+    category VARCHAR(50) NOT NULL, -- 'Healthcare', 'Banking', 'Government', 'Utility'
+    address TEXT NOT NULL,
+    phone VARCHAR(30) NOT NULL,
+    operating_hours VARCHAR(100) NOT NULL, -- e.g. '08:00 AM - 08:00 PM'
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ------------------------------------------------------------------------------
+-- 2. USERS
+-- Represents customers/patients (USER), counter staff (STAFF), and administrators (ADMIN).
+-- ------------------------------------------------------------------------------
+CREATE TABLE users (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT REFERENCES organizations(id) ON DELETE SET NULL, -- NULL for general public users; populated for STAFF/ADMIN
+    full_name VARCHAR(100) NOT NULL,
+    email VARCHAR(120) NOT NULL UNIQUE,
+    phone VARCHAR(30) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL, -- BCrypt hashed password
+    role VARCHAR(20) NOT NULL DEFAULT 'USER' CHECK (role IN ('USER', 'STAFF', 'ADMIN')),
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'INACTIVE')),
+    last_active_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ------------------------------------------------------------------------------
+-- 3. SERVICES
+-- Represents specific service offerings (e.g. General Consultation, Billing, Document Verification).
+-- ------------------------------------------------------------------------------
+CREATE TABLE services (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    token_prefix VARCHAR(5) NOT NULL, -- e.g. 'D' for Doctor/General Consultation, 'B' for Billing
+    average_service_time_minutes INT NOT NULL DEFAULT 15 CHECK (average_service_time_minutes > 0),
+    priority_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    max_queue_size INT NOT NULL DEFAULT 50 CHECK (max_queue_size > 0),
+    operating_hours VARCHAR(100) NOT NULL, -- e.g. '08:00 AM - 02:00 PM'
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'INACTIVE')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_service_org_name UNIQUE (organization_id, name),
+    CONSTRAINT uq_service_org_prefix UNIQUE (organization_id, token_prefix)
+);
+
+-- ------------------------------------------------------------------------------
+-- 4. COUNTERS
+-- Represents physical or logical service windows/desks operated by staff.
+-- ------------------------------------------------------------------------------
+CREATE TABLE counters (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    service_id BIGINT NOT NULL REFERENCES services(id) ON DELETE RESTRICT,
+    staff_id BIGINT UNIQUE REFERENCES users(id) ON DELETE SET NULL, -- A staff member can operate at most one counter at a time
+    counter_number INT NOT NULL CHECK (counter_number > 0),
+    name VARCHAR(50) NOT NULL, -- e.g. 'Counter 1', 'Window A'
+    status VARCHAR(20) NOT NULL DEFAULT 'IDLE' CHECK (status IN ('ACTIVE', 'IDLE', 'CLOSED')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_counter_org_number UNIQUE (organization_id, counter_number)
+);
+
+-- ------------------------------------------------------------------------------
+-- 5. APPOINTMENTS
+-- Pre-booked time slots that can be checked in and converted into high-priority queue tokens.
+-- ------------------------------------------------------------------------------
+CREATE TABLE appointments (
+    id BIGSERIAL PRIMARY KEY,
+    appointment_code VARCHAR(30) NOT NULL UNIQUE, -- e.g. 'A-201', 'A-204'
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    service_id BIGINT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    appointment_date DATE NOT NULL,
+    time_slot VARCHAR(20) NOT NULL, -- e.g. '10:30 AM'
+    status VARCHAR(20) NOT NULL DEFAULT 'CONFIRMED' CHECK (status IN ('CONFIRMED', 'CHECKED_IN', 'COMPLETED', 'CANCELLED', 'NO_SHOW')),
+    notes TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_appointment_slot UNIQUE (service_id, appointment_date, time_slot)
+);
+
+-- ------------------------------------------------------------------------------
+-- 6. QUEUE_ENTRIES
+-- The core transactional queue token record.
+-- ------------------------------------------------------------------------------
+CREATE TABLE queue_entries (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    service_id BIGINT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    counter_id BIGINT REFERENCES counters(id) ON DELETE SET NULL,
+    appointment_id BIGINT UNIQUE REFERENCES appointments(id) ON DELETE SET NULL, -- 1-to-1 link if entry originates from an appointment
+    token_number VARCHAR(20) NOT NULL, -- e.g. 'D-108'
+    daily_sequence INT NOT NULL CHECK (daily_sequence > 0), -- e.g. 108
+    entry_date DATE NOT NULL DEFAULT CURRENT_DATE, -- Tracks the date for daily token number resets
+    type VARCHAR(20) NOT NULL DEFAULT 'WALK_IN' CHECK (type IN ('WALK_IN', 'APPOINTMENT')),
+    priority VARCHAR(20) NOT NULL DEFAULT 'NORMAL' CHECK (priority IN ('NORMAL', 'HIGH')),
+    status VARCHAR(20) NOT NULL DEFAULT 'WAITING' CHECK (status IN ('WAITING', 'CALLED', 'SERVING', 'COMPLETED', 'SKIPPED', 'CANCELLED', 'NO_SHOW')),
+    joined_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    called_at TIMESTAMPTZ,
+    served_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_queue_service_date_seq UNIQUE (service_id, entry_date, daily_sequence),
+    CONSTRAINT uq_queue_service_date_token UNIQUE (service_id, entry_date, token_number)
+);
+
+-- ------------------------------------------------------------------------------
+-- 7. NOTIFICATIONS
+-- In-app notifications and updates dispatched to users.
+-- ------------------------------------------------------------------------------
+CREATE TABLE notifications (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title VARCHAR(150) NOT NULL,
+    message TEXT NOT NULL,
+    type VARCHAR(30) NOT NULL DEFAULT 'INFO' CHECK (type IN ('INFO', 'QUEUE_UPDATE', 'APPOINTMENT', 'ALERT')),
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+    link VARCHAR(255), -- e.g. '/user/queue/D-108'
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ------------------------------------------------------------------------------
+-- PERFORMANCE INDEXES
+-- Indexing high-frequency query filters and foreign key lookups
+-- ------------------------------------------------------------------------------
+CREATE INDEX idx_users_role ON users(role);
+CREATE INDEX idx_services_org_status ON services(organization_id, status);
+CREATE INDEX idx_counters_service ON counters(service_id);
+CREATE INDEX idx_counters_staff ON counters(staff_id);
+CREATE INDEX idx_appointments_service_date ON appointments(service_id, appointment_date, status);
+CREATE INDEX idx_appointments_user ON appointments(user_id);
+CREATE INDEX idx_queue_service_date_status ON queue_entries(service_id, entry_date, status);
+CREATE INDEX idx_queue_user ON queue_entries(user_id);
+CREATE INDEX idx_queue_counter ON queue_entries(counter_id);
+CREATE INDEX idx_notifications_user_read ON notifications(user_id, is_read);
+package com.queuevista.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+import java.time.Instant;
+import java.time.LocalDate;
+
+/**
+ * Appointment models scheduled future bookings for specific services and time slots.
+ * Viva Explanation:
+ * Enforces a unique constraint on (service_id, appointment_date, time_slot) to prevent double-booking.
+ * When a patient checks in, this record transitions to CHECKED_IN and generates a high-priority QueueEntry.
+ */
+@Entity
+@Table(name = "appointments", uniqueConstraints = {
+    @UniqueConstraint(name = "uq_appointment_slot", columnNames = {"service_id", "appointment_date", "time_slot"})
+})
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class Appointment {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(name = "appointment_code", nullable = false, unique = true, length = 30)
+    private String appointmentCode; // e.g. "A-201", "A-204"
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "organization_id", nullable = false)
+    private Organization organization;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "service_id", nullable = false)
+    private ServiceEntity service;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
+    @Column(name = "appointment_date", nullable = false)
+    private LocalDate appointmentDate;
+
+    @Column(name = "time_slot", nullable = false, length = 20)
+    private String timeSlot; // e.g. "10:30 AM"
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    @Builder.Default
+    private AppointmentStatus status = AppointmentStatus.CONFIRMED;
+
+    @Column(columnDefinition = "TEXT")
+    private String notes;
+
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
+
+    @UpdateTimestamp
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
+}
+package com.queuevista.entity;
+
+/**
+ * AppointmentStatus models the lifecycle of a pre-booked time slot.
+ * Viva Explanation:
+ * Tracks whether a scheduled visit is confirmed, checked-in upon patient arrival,
+ * completed at the counter, cancelled in advance, or flagged as a missed appointment (NO_SHOW).
+ */
+public enum AppointmentStatus {
+    CONFIRMED,
+    CHECKED_IN,
+    COMPLETED,
+    CANCELLED,
+    NO_SHOW
+}
+package com.queuevista.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+import java.time.Instant;
+
+/**
+ * Counter represents a physical or logical service desk operated by staff.
+ * Viva Explanation:
+ * Manned by at most one staff user via a unique foreign key on staff_id.
+ * Avoids circular foreign keys with User, and associates each desk with its designated service.
+ */
+@Entity
+@Table(name = "counters", uniqueConstraints = {
+    @UniqueConstraint(name = "uq_counter_org_number", columnNames = {"organization_id", "counter_number"})
+})
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class Counter {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "organization_id", nullable = false)
+    private Organization organization;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "service_id", nullable = false)
+    private ServiceEntity service;
+
+    @OneToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "staff_id", unique = true)
+    private User staff;
+
+    @Column(name = "counter_number", nullable = false)
+    private Integer counterNumber;
+
+    @Column(nullable = false, length = 50)
+    private String name; // e.g. "Counter 1", "Window A"
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    @Builder.Default
+    private CounterStatus status = CounterStatus.IDLE;
+
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
+
+    @UpdateTimestamp
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
+}
+package com.queuevista.entity;
+
+/**
+ * CounterStatus indicates the operational state of a physical counter desk.
+ * Viva Explanation:
+ * Tracks if a counter is actively serving (ACTIVE), open but waiting (IDLE), or shut down (CLOSED)
+ * so tickets are only dispatched to available desks.
+ */
+public enum CounterStatus {
+    ACTIVE,
+    IDLE,
+    CLOSED
+}
+package com.queuevista.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.hibernate.annotations.CreationTimestamp;
+
+import java.time.Instant;
+
+/**
+ * Notification represents an in-app alert or mobile push notification for a user.
+ * Viva Explanation:
+ * Delivers asynchronous alerts such as ticket issuance, advancing positions, counter calls,
+ * and upcoming appointment reminders with an is_read flag for tracking unread badge counts.
+ */
+@Entity
+@Table(name = "notifications")
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class Notification {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
+    @Column(nullable = false, length = 150)
+    private String title;
+
+    @Column(nullable = false, columnDefinition = "TEXT")
+    private String message;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 30)
+    @Builder.Default
+    private NotificationType type = NotificationType.INFO;
+
+    @Column(name = "is_read", nullable = false)
+    @Builder.Default
+    private Boolean isRead = false;
+
+    @Column(length = 255)
+    private String link; // e.g. "/user/queue/D-108"
+
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
+}
+package com.queuevista.entity;
+
+/**
+ * NotificationType classifies messages dispatched to users.
+ * Viva Explanation:
+ * Allows frontend client apps to categorize and badge alerts into general announcements (INFO),
+ * live line movements (QUEUE_UPDATE), appointment reminders (APPOINTMENT), or urgent warnings (ALERT).
+ */
+public enum NotificationType {
+    INFO,
+    QUEUE_UPDATE,
+    APPOINTMENT,
+    ALERT
+}
+package com.queuevista.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+import java.time.Instant;
+
+/**
+ * Organization represents a facility branch (clinic, hospital, bank, or government office).
+ * Viva Explanation:
+ * Top-level multi-tenant container entity in QueueVista. Services, counters, and staff members
+ * all belong to an organization, enabling multi-location isolation.
+ */
+@Entity
+@Table(name = "organizations")
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class Organization {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false, length = 150)
+    private String name;
+
+    @Column(nullable = false, length = 50)
+    private String category; // Healthcare, Banking, Government, Utility
+
+    @Column(nullable = false, columnDefinition = "TEXT")
+    private String address;
+
+    @Column(nullable = false, length = 30)
+    private String phone;
+
+    @Column(name = "operating_hours", nullable = false, length = 100)
+    private String operatingHours;
+
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
+
+    @UpdateTimestamp
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
+}
+package com.queuevista.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+import java.time.Instant;
+import java.time.LocalDate;
+
+/**
+ * QueueEntry represents an individual ticket in the digital queue.
+ * Viva Explanation:
+ * The transactional core of QueueVista. Tracks token numbers (e.g. D-108), daily sequence,
+ * entry date for daily resets, line priority, and exact timestamps across lifecycle states.
+ */
+@Entity
+@Table(name = "queue_entries", uniqueConstraints = {
+    @UniqueConstraint(name = "uq_queue_service_date_seq", columnNames = {"service_id", "entry_date", "daily_sequence"}),
+    @UniqueConstraint(name = "uq_queue_service_date_token", columnNames = {"service_id", "entry_date", "token_number"})
+})
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class QueueEntry {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "organization_id", nullable = false)
+    private Organization organization;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "service_id", nullable = false)
+    private ServiceEntity service;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "counter_id")
+    private Counter counter;
+
+    @OneToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "appointment_id", unique = true)
+    private Appointment appointment;
+
+    @Column(name = "token_number", nullable = false, length = 20)
+    private String tokenNumber; // e.g. "D-108"
+
+    @Column(name = "daily_sequence", nullable = false)
+    private Integer dailySequence; // e.g. 108
+
+    @Column(name = "entry_date", nullable = false)
+    @Builder.Default
+    private LocalDate entryDate = LocalDate.now();
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    @Builder.Default
+    private QueueType type = QueueType.WALK_IN;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    @Builder.Default
+    private QueuePriority priority = QueuePriority.NORMAL;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    @Builder.Default
+    private QueueStatus status = QueueStatus.WAITING;
+
+    @CreationTimestamp
+    @Column(name = "joined_at", nullable = false, updatable = false)
+    private Instant joinedAt;
+
+    @Column(name = "called_at")
+    private Instant calledAt;
+
+    @Column(name = "served_at")
+    private Instant servedAt;
+
+    @Column(name = "completed_at")
+    private Instant completedAt;
+
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
+
+    @UpdateTimestamp
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
+}
+package com.queuevista.entity;
+
+/**
+ * QueuePriority defines the serving priority tier for a ticket.
+ * Viva Explanation:
+ * Allows checked-in appointments or emergency cases to be tagged as HIGH priority
+ * so they are served ahead of NORMAL walk-in tokens in the queue ordering logic.
+ */
+public enum QueuePriority {
+    NORMAL,
+    HIGH
+}
+package com.queuevista.entity;
+
+/**
+ * QueueStatus models the live lifecycle of a digital queue ticket.
+ * Viva Explanation:
+ * Enforces the progression from WAITING in line, to CALLED by staff, to SERVING at the counter,
+ * ending in COMPLETED, SKIPPED (temporarily absent), CANCELLED by user, or NO_SHOW.
+ */
+public enum QueueStatus {
+    WAITING,
+    CALLED,
+    SERVING,
+    COMPLETED,
+    SKIPPED,
+    CANCELLED,
+    NO_SHOW
+}
+package com.queuevista.entity;
+
+/**
+ * QueueType categorizes how the user entered the queue.
+ * Viva Explanation:
+ * Differentiates between walk-in visitors and patients arriving with pre-booked appointments,
+ * aiding reporting and automated priority dispatch.
+ */
+public enum QueueType {
+    WALK_IN,
+    APPOINTMENT
+}
+package com.queuevista.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+import java.time.Instant;
+
+/**
+ * ServiceEntity maps to the 'services' table in PostgreSQL.
+ * Viva Explanation:
+ * Named ServiceEntity to prevent name collisions with Spring's @Service stereotype annotation.
+ * Represents departments (e.g. General Consultation, Billing) and stores token_prefix (e.g. 'D')
+ * used for generating tokens like D-108.
+ */
+@Entity
+@Table(name = "services", uniqueConstraints = {
+    @UniqueConstraint(name = "uq_service_org_name", columnNames = {"organization_id", "name"}),
+    @UniqueConstraint(name = "uq_service_org_prefix", columnNames = {"organization_id", "token_prefix"})
+})
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class ServiceEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "organization_id", nullable = false)
+    private Organization organization;
+
+    @Column(nullable = false, length = 100)
+    private String name;
+
+    @Column(columnDefinition = "TEXT")
+    private String description;
+
+    @Column(name = "token_prefix", nullable = false, length = 5)
+    private String tokenPrefix; // e.g. 'D', 'B', 'V'
+
+    @Column(name = "average_service_time_minutes", nullable = false)
+    @Builder.Default
+    private Integer averageServiceTimeMinutes = 15;
+
+    @Column(name = "priority_enabled", nullable = false)
+    @Builder.Default
+    private Boolean priorityEnabled = true;
+
+    @Column(name = "max_queue_size", nullable = false)
+    @Builder.Default
+    private Integer maxQueueSize = 50;
+
+    @Column(name = "operating_hours", nullable = false, length = 100)
+    private String operatingHours;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    @Builder.Default
+    private UserStatus status = UserStatus.ACTIVE;
+
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
+
+    @UpdateTimestamp
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
+}
+package com.queuevista.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+import java.time.Instant;
+
+/**
+ * User represents system actors across all three roles: USER, STAFF, and ADMIN.
+ * Viva Explanation:
+ * Core security and profile entity. General public citizens have organization=null because
+ * they can visit any branch, while STAFF and ADMIN are linked to their respective workplace branch.
+ */
+@Entity
+@Table(name = "users")
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class User {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "organization_id")
+    private Organization organization;
+
+    @Column(name = "full_name", nullable = false, length = 100)
+    private String fullName;
+
+    @Column(nullable = false, unique = true, length = 120)
+    private String email;
+
+    @Column(nullable = false, length = 30)
+    private String phone;
+
+    @Column(name = "password_hash", nullable = false, length = 255)
+    private String passwordHash;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    @Builder.Default
+    private UserRole role = UserRole.USER;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    @Builder.Default
+    private UserStatus status = UserStatus.ACTIVE;
+
+    @Column(name = "last_active_at")
+    private Instant lastActiveAt;
+
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
+
+    @UpdateTimestamp
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
+}
+package com.queuevista.entity;
+
+/**
+ * UserRole defines the three authorization levels supported by QueueVista.
+ * Viva Explanation:
+ * Roles control system access: USER for citizens/patients, STAFF for counter desk operators,
+ * and ADMIN for facility supervisors managing queues, services, and staff assignments.
+ */
+public enum UserRole {
+    USER,
+    STAFF,
+    ADMIN
+}
+package com.queuevista.entity;
+
+/**
+ * UserStatus tracks whether a user account is active or deactivated.
+ * Viva Explanation:
+ * Allows administrators to deactivate staff or user accounts without deleting historical
+ * records, maintaining referential integrity for completed visits and appointments.
+ */
+public enum UserStatus {
+    ACTIVE,
+    INACTIVE
+}
+package com.queuevista.repository;
+
+import com.queuevista.entity.Appointment;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Optional;
+
+/**
+ * AppointmentRepository manages booking persistence and slot availability queries.
+ * Viva Explanation:
+ * Provides existsByServiceIdAndAppointmentDateAndTimeSlot to prevent double-booking slot collisions
+ * before an appointment record is committed.
+ */
+@Repository
+public interface AppointmentRepository extends JpaRepository<Appointment, Long> {
+
+    List<Appointment> findByUserId(Long userId);
+
+    Optional<Appointment> findByAppointmentCode(String appointmentCode);
+
+    boolean existsByServiceIdAndAppointmentDateAndTimeSlot(Long serviceId, LocalDate date, String timeSlot);
+}
+package com.queuevista.repository;
+
+import com.queuevista.entity.Counter;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+import java.util.Optional;
+
+/**
+ * CounterRepository handles database access for service desks and staff desk assignments.
+ * Viva Explanation:
+ * Includes findByStaffId to dynamically determine which counter an authenticated staff member
+ * is assigned to upon login without needing circular entity references.
+ */
+@Repository
+public interface CounterRepository extends JpaRepository<Counter, Long> {
+
+    List<Counter> findByOrganizationId(Long organizationId);
+
+    Optional<Counter> findByStaffId(Long staffId);
+
+    List<Counter> findByServiceId(Long serviceId);
+}
+package com.queuevista.repository;
+
+import com.queuevista.entity.Notification;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+
+/**
+ * NotificationRepository fetches user alerts and calculates unread message counts.
+ * Viva Explanation:
+ * Provides countByUserIdAndIsReadFalse to quickly drive badge notification indicators
+ * on the frontend top navigation bar.
+ */
+@Repository
+public interface NotificationRepository extends JpaRepository<Notification, Long> {
+
+    List<Notification> findByUserIdOrderByCreatedAtDesc(Long userId);
+
+    long countByUserIdAndIsReadFalse(Long userId);
+}
+package com.queuevista.repository;
+
+import com.queuevista.entity.Organization;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.Optional;
+
+/**
+ * OrganizationRepository provides CRUD access for facility/branch records.
+ * Viva Explanation:
+ * Allows querying organizations by primary key and checking facility names for uniqueness
+ * when onboarding clinics or banks into QueueVista.
+ */
+@Repository
+public interface OrganizationRepository extends JpaRepository<Organization, Long> {
+
+    Optional<Organization> findByName(String name);
+}
+package com.queuevista.repository;
+
+import com.queuevista.entity.QueueEntry;
+import com.queuevista.entity.QueueStatus;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Optional;
+
+/**
+ * QueueEntryRepository executes persistence and queue progression queries for live tokens.
+ * Viva Explanation:
+ * Features findMaxDailySequence to atomically determine the next sequential token number (e.g. 108)
+ * for a service on the current day, guaranteeing natural daily ticket resets.
+ */
+@Repository
+public interface QueueEntryRepository extends JpaRepository<QueueEntry, Long> {
+
+    Optional<QueueEntry> findByTokenNumber(String tokenNumber);
+
+    List<QueueEntry> findByUserIdOrderByJoinedAtDesc(Long userId);
+
+    List<QueueEntry> findByServiceIdAndEntryDateAndStatus(Long serviceId, LocalDate entryDate, QueueStatus status);
+
+    @Query("SELECT COALESCE(MAX(q.dailySequence), 100) FROM QueueEntry q WHERE q.service.id = :serviceId AND q.entryDate = :entryDate")
+    Integer findMaxDailySequence(@Param("serviceId") Long serviceId, @Param("entryDate") LocalDate entryDate);
+}
+package com.queuevista.repository;
+
+import com.queuevista.entity.ServiceEntity;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+import java.util.Optional;
+
+/**
+ * ServiceRepository provides query methods for service departments.
+ * Viva Explanation:
+ * Allows looking up all services offered by an organization (e.g., General Consultation, Billing)
+ * and verifying that token prefixes (such as 'D', 'B') are unique within each facility.
+ */
+@Repository
+public interface ServiceRepository extends JpaRepository<ServiceEntity, Long> {
+
+    List<ServiceEntity> findByOrganizationId(Long organizationId);
+
+    Optional<ServiceEntity> findByOrganizationIdAndTokenPrefix(Long organizationId, String tokenPrefix);
+}
+package com.queuevista.repository;
+
+import com.queuevista.entity.User;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.Optional;
+
+/**
+ * UserRepository provides Spring Data JPA CRUD and query methods for User entities.
+ * Viva Explanation:
+ * Extends JpaRepository to inherit standard persistence methods, and declares derived query methods
+ * like findByEmail and existsByEmail to support authentication and uniqueness validation.
+ */
+@Repository
+public interface UserRepository extends JpaRepository<User, Long> {
+
+    Optional<User> findByEmail(String email);
+
+    boolean existsByEmail(String email);
+}
+package com.queuevista.config;
+
+import com.queuevista.security.JwtAuthenticationEntryPoint;
+import com.queuevista.security.JwtAuthenticationFilter;
+import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
+import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+
+import java.util.Arrays;
+import java.util.List;
+
+/**
+ * SecurityConfig sets up Spring Security 6 filter chains, authorization rules, password encryption, and CORS.
+ * Viva Explanation:
+ * Configures stateless session management, BCrypt password hashing, and role-based endpoint security:
+ * /api/auth/** is open, /api/user/** requires USER/STAFF/ADMIN, /api/staff/** requires STAFF/ADMIN,
+ * and /api/admin/** requires ADMIN. Enables CORS for the Vite React frontend at http://localhost:5173.
+ */
+@Configuration
+@EnableWebSecurity
+@EnableMethodSecurity
+@RequiredArgsConstructor
+public class SecurityConfig {
+
+    private final JwtAuthenticationEntryPoint jwtAuthenticationEntryPoint;
+    private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final UserDetailsService userDetailsService;
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+
+    @Bean
+    public DaoAuthenticationProvider authenticationProvider() {
+        DaoAuthenticationProvider authProvider = new DaoAuthenticationProvider();
+        authProvider.setUserDetailsService(userDetailsService);
+        authProvider.setPasswordEncoder(passwordEncoder());
+        return authProvider;
+    }
+
+    @Bean
+    public AuthenticationManager authenticationManager(AuthenticationConfiguration authConfig) throws Exception {
+        return authConfig.getAuthenticationManager();
+    }
+
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        http
+                .cors(Customizer.withDefaults())
+                .csrf(AbstractHttpConfigurer::disable)
+                .exceptionHandling(exception -> exception.authenticationEntryPoint(jwtAuthenticationEntryPoint))
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers("/api/auth/**").permitAll()
+                        .requestMatchers("/api/public/**").permitAll()
+                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                        .requestMatchers("/api/staff/**").hasAnyRole("STAFF", "ADMIN")
+                        .requestMatchers("/api/user/**").hasAnyRole("USER", "STAFF", "ADMIN")
+                        .anyRequest().authenticated()
+                );
+
+        http.authenticationProvider(authenticationProvider());
+        http.addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+
+        return http.build();
+    }
+
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration configuration = new CorsConfiguration();
+        configuration.setAllowedOrigins(List.of("http://localhost:5173"));
+        configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+        configuration.setAllowedHeaders(Arrays.asList("Authorization", "Content-Type", "Accept", "X-Requested-With"));
+        configuration.setExposedHeaders(List.of("Authorization"));
+        configuration.setAllowCredentials(true);
+        configuration.setMaxAge(3600L);
+
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", configuration);
+        return source;
+    }
+}

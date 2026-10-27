@@ -31,14 +31,14 @@ export const queueService = {
   getByToken: async (tokenNumber: string): Promise<QueueEntry | undefined> => {
     await new Promise((res) => setTimeout(res, 80));
     return getStoredQueueEntries().find(
-      (q) => q.tokenNumber.toUpperCase() === tokenNumber.toUpperCase()
+        (q) => q.tokenNumber.toUpperCase() === tokenNumber.toUpperCase()
     );
   },
 
   getActiveForService: async (serviceId: string): Promise<QueueEntry[]> => {
     await new Promise((res) => setTimeout(res, 80));
     return getStoredQueueEntries().filter(
-      (q) => q.serviceId === serviceId && (q.status === 'WAITING' || q.status === 'SERVING')
+        (q) => q.serviceId === serviceId && (q.status === 'WAITING' || q.status === 'SERVING')
     );
   },
 
@@ -55,27 +55,27 @@ export const queueService = {
   }): Promise<QueueEntry> => {
     await new Promise((res) => setTimeout(res, 150));
     const entries = getStoredQueueEntries();
-    
+
     // Determine token prefix
     const prefix = params.serviceName.includes('General')
-      ? 'D'
-      : params.serviceName.includes('Billing')
-      ? 'B'
-      : params.serviceName.includes('Document')
-      ? 'V'
-      : 'T';
+        ? 'D'
+        : params.serviceName.includes('Billing')
+            ? 'B'
+            : params.serviceName.includes('Document')
+                ? 'V'
+                : 'T';
 
     // Find highest token number for prefix
     const existingTokens = entries
-      .filter((e) => e.tokenNumber.startsWith(prefix))
-      .map((e) => parseInt(e.tokenNumber.split('-')[1], 10))
-      .filter((n) => !isNaN(n));
+        .filter((e) => e.tokenNumber.startsWith(prefix))
+        .map((e) => parseInt(e.tokenNumber.split('-')[1], 10))
+        .filter((n) => !isNaN(n));
     const nextNumber = existingTokens.length > 0 ? Math.max(...existingTokens) + 1 : 101;
     const tokenNumber = `${prefix}-${nextNumber}`;
 
     // Calculate waiting positions
     const waitingInService = entries.filter(
-      (e) => e.serviceId === params.serviceId && e.status === 'WAITING'
+        (e) => e.serviceId === params.serviceId && e.status === 'WAITING'
     );
     const position = waitingInService.length + 1;
     const peopleAhead = waitingInService.length;
@@ -126,7 +126,7 @@ export const queueService = {
 
     // Recalculate remaining waiting positions
     const remainingWaiting = entries.filter(
-      (e) => e.serviceId === target.serviceId && e.status === 'WAITING'
+        (e) => e.serviceId === target.serviceId && e.status === 'WAITING'
     );
     remainingWaiting.forEach((entry, idx) => {
       entry.position = idx + 1;
@@ -146,7 +146,7 @@ export const queueService = {
 
     // Find currently serving token for this counter
     const currentServing = entries.find(
-      (e) => e.counterId === counterId && e.status === 'SERVING'
+        (e) => e.counterId === counterId && e.status === 'SERVING'
     );
 
     let completedToken: QueueEntry | undefined;
@@ -155,19 +155,19 @@ export const queueService = {
       currentServing.completedAt = new Date().toISOString();
       completedToken = currentServing;
       await analyticsService.logActivity(
-        `Token ${currentServing.tokenNumber} completed at Counter 2`,
-        'TOKEN_COMPLETED'
+          `Token ${currentServing.tokenNumber} completed at Counter 2`,
+          'TOKEN_COMPLETED'
       );
     }
 
     // Find next waiting token (Prioritize HIGH priority, then earliest joinedAt)
     const waitingTokens = entries
-      .filter((e) => e.status === 'WAITING')
-      .sort((a, b) => {
-        if (a.priority === 'HIGH' && b.priority !== 'HIGH') return -1;
-        if (b.priority === 'HIGH' && a.priority !== 'HIGH') return 1;
-        return new Date(a.joinedAt).getTime() - new Date(b.joinedAt).getTime();
-      });
+        .filter((e) => e.status === 'WAITING')
+        .sort((a, b) => {
+          if (a.priority === 'HIGH' && b.priority !== 'HIGH') return -1;
+          if (b.priority === 'HIGH' && a.priority !== 'HIGH') return 1;
+          return new Date(a.joinedAt).getTime() - new Date(b.joinedAt).getTime();
+        });
 
     let nextToken: QueueEntry | undefined;
     if (waitingTokens.length > 0) {
@@ -191,8 +191,8 @@ export const queueService = {
       });
 
       await analyticsService.logActivity(
-        `Counter 2 called token ${nextToken.tokenNumber}`,
-        'TOKEN_CALLED'
+          `Counter 2 called token ${nextToken.tokenNumber}`,
+          'TOKEN_CALLED'
       );
     }
 
@@ -225,7 +225,7 @@ export const queueService = {
     await new Promise((res) => setTimeout(res, 120));
     const entries = getStoredQueueEntries();
     const current = entries.find(
-      (e) => e.counterId === counterId && e.status === 'SERVING'
+        (e) => e.counterId === counterId && e.status === 'SERVING'
     );
     if (!current) return undefined;
 
@@ -234,8 +234,8 @@ export const queueService = {
     saveQueueEntries(entries);
 
     await analyticsService.logActivity(
-      `Counter 2 skipped token ${current.tokenNumber} (No-show)`,
-      'TOKEN_SKIPPED'
+        `Counter 2 skipped token ${current.tokenNumber} (No-show)`,
+        'TOKEN_SKIPPED'
     );
 
     return current;
@@ -245,7 +245,7 @@ export const queueService = {
     await new Promise((res) => setTimeout(res, 80));
     const entries = getStoredQueueEntries();
     const current = entries.find(
-      (e) => e.counterId === counterId && e.status === 'SERVING'
+        (e) => e.counterId === counterId && e.status === 'SERVING'
     );
     if (current) {
       await notificationService.create({
@@ -256,8 +256,8 @@ export const queueService = {
         link: `/user/queue/${current.tokenNumber}`,
       });
       await analyticsService.logActivity(
-        `Counter 2 recalled token ${current.tokenNumber}`,
-        'TOKEN_CALLED'
+          `Counter 2 recalled token ${current.tokenNumber}`,
+          'TOKEN_CALLED'
       );
     }
     return current;

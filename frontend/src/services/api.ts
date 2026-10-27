@@ -3,8 +3,8 @@ import axios from 'axios';
 // Base Axios instance configured for REST calls
 // In Phase 2, this baseURL will point to the Spring Boot REST backend (e.g., http://localhost:8080/api)
 export const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
-  headers: {
+    baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080/api',
+    headers: {
     'Content-Type': 'application/json',
   },
   timeout: 10000,
